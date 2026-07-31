@@ -1,0 +1,267 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+const mime = require('mime-types');
+const authMiddleware = require('../middleware/auth');
+
+const router = express.Router();
+
+// Resolve all routes through auth middleware
+router.use(authMiddleware);
+
+/**
+ * Safely resolve and validate a requested path to prevent directory traversal.
+ * Returns the resolved absolute path, or null if the path is not safe.
+ */
+function safePath(requestedPath) {
+  if (!requestedPath) return null;
+
+  // Resolve to an absolute path
+  const resolved = path.resolve(requestedPath);
+
+  // Block paths that try to traverse via encoded sequences
+  if (requestedPath.includes('..')) return null;
+
+  return resolved;
+}
+
+/**
+ * List available drives / mount points.
+ */
+router.get('/drives', (req, res) => {
+  try {
+    const drives = getAvailableDrives();
+    res.json({ drives });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * List files and folders in a directory.
+ */
+router.get('/files', (req, res) => {
+  const requestedPath = req.query.path;
+
+  if (!requestedPath) {
+    return res.status(400).json({ error: 'path query parameter is required' });
+  }
+
+  const resolved = safePath(requestedPath);
+  if (!resolved) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+
+  if (!fs.existsSync(resolved)) {
+    return res.status(404).json({ error: 'Path not found' });
+  }
+
+  const stat = fs.statSync(resolved);
+  if (!stat.isDirectory()) {
+    return res.status(400).json({ error: 'Path is not a directory' });
+  }
+
+  try {
+    const entries = fs.readdirSync(resolved, { withFileTypes: true });
+    const items = entries
+      .filter((e) => !e.name.startsWith('.') || process.env.SHOW_HIDDEN === 'true')
+      .map((e) => {
+        const fullPath = path.join(resolved, e.name);
+        let size = null;
+        let mtime = null;
+        try {
+          const s = fs.statSync(fullPath);
+          size = e.isFile() ? s.size : null;
+          mtime = s.mtime.toISOString();
+        } catch {
+          // skip unreadable entries
+        }
+        return {
+          name: e.name,
+          path: fullPath,
+          isDirectory: e.isDirectory(),
+          isFile: e.isFile(),
+          size,
+          mtime,
+          mimeType: e.isFile() ? mime.lookup(e.name) || 'application/octet-stream' : null,
+        };
+      })
+      .sort((a, b) => {
+        // Directories first, then files
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      });
+
+    res.json({
+      path: resolved,
+      parent: path.dirname(resolved) !== resolved ? path.dirname(resolved) : null,
+      items,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * Download a file.
+ */
+router.get('/download', (req, res) => {
+  const requestedPath = req.query.path;
+
+  if (!requestedPath) {
+    return res.status(400).json({ error: 'path query parameter is required' });
+  }
+
+  const resolved = safePath(requestedPath);
+  if (!resolved) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+
+  if (!fs.existsSync(resolved)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile()) {
+    return res.status(400).json({ error: 'Path is not a file' });
+  }
+
+  const mimeType = mime.lookup(resolved) || 'application/octet-stream';
+  const fileName = path.basename(resolved);
+
+  res.setHeader('Content-Type', mimeType);
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+  res.setHeader('Content-Length', stat.size);
+
+  const stream = fs.createReadStream(resolved);
+  stream.on('error', (err) => {
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  stream.pipe(res);
+});
+
+/**
+ * Preview a file (inline, without forcing download).
+ */
+router.get('/preview', (req, res) => {
+  const requestedPath = req.query.path;
+
+  if (!requestedPath) {
+    return res.status(400).json({ error: 'path query parameter is required' });
+  }
+
+  const resolved = safePath(requestedPath);
+  if (!resolved) {
+    return res.status(400).json({ error: 'Invalid path' });
+  }
+
+  if (!fs.existsSync(resolved)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile()) {
+    return res.status(400).json({ error: 'Path is not a file' });
+  }
+
+  const mimeType = mime.lookup(resolved) || 'application/octet-stream';
+
+  res.setHeader('Content-Type', mimeType);
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(path.basename(resolved))}"`);
+  res.setHeader('Content-Length', stat.size);
+
+  const stream = fs.createReadStream(resolved);
+  stream.on('error', (err) => {
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+  stream.pipe(res);
+});
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function getAvailableDrives() {
+  if (process.platform === 'win32') {
+    return getWindowsDrives();
+  }
+  return getUnixMounts();
+}
+
+function getWindowsDrives() {
+  const drives = [];
+  for (let i = 65; i <= 90; i++) {
+    const letter = String.fromCharCode(i);
+    const drivePath = `${letter}:\\`;
+    if (fs.existsSync(drivePath)) {
+      drives.push({ name: `${letter}:`, path: drivePath, type: 'drive' });
+    }
+  }
+  return drives;
+}
+
+function getUnixMounts() {
+  const drives = [];
+  const seen = new Set();
+
+  // Always include root
+  drives.push({ name: 'Root (/)', path: '/', type: 'root' });
+  seen.add('/');
+
+  // Read /proc/mounts if available (Linux)
+  try {
+    const mounts = fs.readFileSync('/proc/mounts', 'utf8');
+    mounts.split('\n').forEach((line) => {
+      const parts = line.split(' ');
+      if (parts.length < 3) return;
+
+      const device = parts[0];
+      const mountPoint = parts[1];
+      const fsType = parts[2];
+
+      // Skip virtual/pseudo filesystems
+      const skipTypes = ['proc', 'sysfs', 'devpts', 'tmpfs', 'cgroup', 'cgroup2',
+        'pstore', 'bpf', 'tracefs', 'debugfs', 'securityfs', 'fusectl',
+        'hugetlbfs', 'mqueue', 'devtmpfs', 'configfs', 'efivarfs', 'autofs',
+        'squashfs', 'overlay', 'none', 'binfmt_misc', 'ramfs', 'nsfs',
+        'rpc_pipefs', 'nfsd', 'sunrpc', 'selinuxfs', 'cifs', 'fuse.gvfsd-fuse'];
+
+      if (skipTypes.includes(fsType)) return;
+      if (seen.has(mountPoint)) return;
+      if (!mountPoint.startsWith('/')) return;
+
+      // Skip snap/loop mounts
+      if (device.startsWith('/dev/loop') || mountPoint.startsWith('/snap/')) return;
+
+      seen.add(mountPoint);
+
+      const name = mountPoint === '/' ? 'Root (/)' : path.basename(mountPoint) || mountPoint;
+      drives.push({ name, path: mountPoint, type: fsType, device });
+    });
+  } catch {
+    // /proc/mounts not available (macOS or container)
+  }
+
+  // macOS: use /Volumes
+  if (process.platform === 'darwin') {
+    try {
+      const volumes = fs.readdirSync('/Volumes');
+      volumes.forEach((v) => {
+        const vPath = `/Volumes/${v}`;
+        if (!seen.has(vPath)) {
+          seen.add(vPath);
+          drives.push({ name: v, path: vPath, type: 'volume' });
+        }
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  return drives;
+}
+
+module.exports = router;
