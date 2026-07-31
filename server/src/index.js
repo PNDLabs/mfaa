@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const rateLimit = require('express-rate-limit');
 
 const authRoutes = require('./routes/auth');
 const filesRoutes = require('./routes/files');
@@ -41,7 +42,17 @@ app.use('/api', qrRoutes);
 
 // ─── Serve React build (production) ──────────────────────────────────────────
 const clientBuildPath = path.join(__dirname, '../../client/dist');
+
+// General rate limiter for static asset serving
+const staticLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 if (fs.existsSync(clientBuildPath)) {
+  app.use(staticLimiter);
   app.use(express.static(clientBuildPath));
   app.get('*', (req, res) => {
     res.sendFile(path.join(clientBuildPath, 'index.html'));

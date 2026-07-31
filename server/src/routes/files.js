@@ -16,9 +16,9 @@ const fileLimiter = rateLimit({
   message: { error: 'Too many requests, please slow down' },
 });
 
-// Resolve all routes through auth middleware
-router.use(authMiddleware);
+// Apply rate limiter first, then auth, so rate limiting is not bypassable
 router.use(fileLimiter);
+router.use(authMiddleware);
 
 /**
  * Extract a single string query parameter safely.
