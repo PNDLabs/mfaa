@@ -1,27 +1,54 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const mime = require('mime-types');
+const rateLimit = require('express-rate-limit');
 const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
 
+// Rate limiter: max 120 requests per minute per IP for file operations
+const fileLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please slow down' },
+});
+
 // Resolve all routes through auth middleware
 router.use(authMiddleware);
+router.use(fileLimiter);
 
 /**
- * Safely resolve and validate a requested path to prevent directory traversal.
+ * Extract a single string query parameter safely.
+ * Express allows duplicate params which results in an array — reject those.
+ */
+function getStringParam(value) {
+  if (typeof value === 'string') return value;
+  return null;
+}
+
+/**
+ * Safely resolve and validate a requested path to prevent directory traversal
+ * and null-byte injection. Only accepts absolute paths.
  * Returns the resolved absolute path, or null if the path is not safe.
  */
 function safePath(requestedPath) {
-  if (!requestedPath) return null;
+  if (!requestedPath || typeof requestedPath !== 'string') return null;
 
-  // Resolve to an absolute path
+  // Reject null bytes (common injection vector)
+  if (requestedPath.includes('\0')) return null;
+
+  // Only allow absolute paths — the client receives these from server responses,
+  // so there is no legitimate reason to send a relative path.
+  if (!path.isAbsolute(requestedPath)) return null;
+
+  // Resolve to normalize any remaining . or .. components
   const resolved = path.resolve(requestedPath);
 
-  // Block paths that try to traverse via encoded sequences
-  if (requestedPath.includes('..')) return null;
+  // Guard against any post-resolution null bytes
+  if (resolved.includes('\0')) return null;
 
   return resolved;
 }
@@ -42,7 +69,7 @@ router.get('/drives', (req, res) => {
  * List files and folders in a directory.
  */
 router.get('/files', (req, res) => {
-  const requestedPath = req.query.path;
+  const requestedPath = getStringParam(req.query.path);
 
   if (!requestedPath) {
     return res.status(400).json({ error: 'path query parameter is required' });
@@ -107,7 +134,7 @@ router.get('/files', (req, res) => {
  * Download a file.
  */
 router.get('/download', (req, res) => {
-  const requestedPath = req.query.path;
+  const requestedPath = getStringParam(req.query.path);
 
   if (!requestedPath) {
     return res.status(400).json({ error: 'path query parameter is required' });
@@ -147,7 +174,7 @@ router.get('/download', (req, res) => {
  * Preview a file (inline, without forcing download).
  */
 router.get('/preview', (req, res) => {
-  const requestedPath = req.query.path;
+  const requestedPath = getStringParam(req.query.path);
 
   if (!requestedPath) {
     return res.status(400).json({ error: 'path query parameter is required' });
