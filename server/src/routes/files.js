@@ -31,7 +31,8 @@ function getStringParam(value) {
 
 /**
  * Safely resolve and validate a requested path to prevent directory traversal
- * and null-byte injection. Only accepts absolute paths.
+ * and null-byte injection. Only accepts absolute paths that start with a known
+ * drive/mount-point root.
  * Returns the resolved absolute path, or null if the path is not safe.
  */
 function safePath(requestedPath) {
@@ -49,6 +50,15 @@ function safePath(requestedPath) {
 
   // Guard against any post-resolution null bytes
   if (resolved.includes('\0')) return null;
+
+  // Verify the resolved path starts with a known allowed root (drive/mount point).
+  // This prevents access to paths that could not be reached via normal navigation.
+  const allowedRoots = getAvailableDrives().map((d) => d.path);
+  const isUnderAllowedRoot = allowedRoots.some((root) => {
+    if (root === '/' || root === path.sep) return resolved.startsWith('/');
+    return resolved === root || resolved.startsWith(root + path.sep);
+  });
+  if (!isUnderAllowedRoot) return null;
 
   return resolved;
 }
