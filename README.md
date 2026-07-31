@@ -86,7 +86,7 @@ pm2 startup   # to auto-start on boot
 | `ACCESS_PASSWORD_HASH` | Yes* | – | bcrypt hash (overrides `ACCESS_PASSWORD`) |
 | `JWT_SECRET` | **Yes** | insecure default | Secret for signing JWT tokens |
 | `TOKEN_EXPIRY` | No | `24h` | Token validity (e.g. `1h`, `7d`) |
-| `PORT` | No | `3001` | HTTP port |
+| `PORT` | No | `3001` | HTTP port (overridden to `3039` in `ecosystem.config.js` for PM2 deployments — keep `.env` and `ecosystem.config.js` in sync) |
 | `ALLOWED_ORIGINS` | No | `*` | Comma-separated CORS origins |
 | `SHOW_HIDDEN` | No | `false` | Show hidden files (`.dotfiles`) |
 | `NODE_ENV` | No | `development` | `production` silences debug output |
@@ -103,19 +103,21 @@ pm2 startup   # to auto-start on boot
    cloudflared tunnel login
    cloudflared tunnel create mfaa
    ```
-3. Create `~/.cloudflared/config.yml`:
+3. Create `~/.cloudflared/config.yml` (or, if `cloudflared` is already installed as a system service, add an ingress entry to the existing `/etc/cloudflared/config.yml` instead of creating a new tunnel):
    ```yaml
    tunnel: <TUNNEL_ID>
    credentials-file: /home/user/.cloudflared/<TUNNEL_ID>.json
    ingress:
      - hostname: files.yourdomain.com
-       service: http://localhost:3001
+       service: http://localhost:3039   # must match PORT in .env / ecosystem.config.js
      - service: http_status:404
    ```
-4. Add to your domain's DNS (cloudflared will guide you)
-5. Start the tunnel:
+4. Add to your domain's DNS (cloudflared will guide you), or if reusing an existing tunnel: `cloudflared tunnel route dns <TUNNEL_NAME> files.yourdomain.com`
+5. Start the tunnel (or restart it, if reusing an existing systemd-managed tunnel):
    ```bash
    cloudflared tunnel run mfaa
+   # or, for an existing service:
+   sudo systemctl restart cloudflared
    ```
 6. Update `ALLOWED_ORIGINS` in `server/.env`:
    ```env

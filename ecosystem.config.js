@@ -12,11 +12,11 @@ module.exports = {
       max_memory_restart: '512M',
       env: {
         NODE_ENV: 'production',
-        PORT: 3001,
+        PORT: 3039,
       },
       env_production: {
         NODE_ENV: 'production',
-        PORT: 3001,
+        PORT: 3039,
       },
       // Load .env automatically — set secrets there, not here
       // PM2 will load the .env file from cwd
