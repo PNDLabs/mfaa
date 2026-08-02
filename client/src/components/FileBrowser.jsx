@@ -15,11 +15,7 @@ export default function FileBrowser({ onLogout }) {
   const [previewItem, setPreviewItem] = useState(null);
   const [qrData, setQrData] = useState(null); // { url, name }
 
-  useEffect(() => {
-    loadDrives();
-  }, []);
-
-  async function loadDrives() {
+  const loadDrives = useCallback(async (push = true) => {
     setLoading(true);
     setError('');
     try {
@@ -27,6 +23,9 @@ export default function FileBrowser({ onLogout }) {
       setDrives(res.data.drives);
       setView('drives');
       setBreadcrumbs([]);
+      if (push) {
+        history.pushState(null, '', window.location.pathname + window.location.search);
+      }
     } catch (err) {
       if (err.response?.status === 401 || err.response?.status === 403) {
         onLogout();
@@ -36,9 +35,9 @@ export default function FileBrowser({ onLogout }) {
     } finally {
       setLoading(false);
     }
-  }
+  }, [onLogout]);
 
-  const navigate = useCallback(async (path) => {
+  const navigate = useCallback(async (path, push = true) => {
     setLoading(true);
     setError('');
     try {
@@ -46,16 +45,19 @@ export default function FileBrowser({ onLogout }) {
       setListing(res.data);
       setCurrentPath(path);
       setView('files');
+      if (push) {
+        history.pushState(null, '', '#' + encodeURIComponent(path));
+      }
 
       // Build breadcrumbs
       const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
       const crumbs = [];
       // Add home (drives)
       crumbs.push({ label: '🏠 Drives', path: null });
-      let accumulated = path.startsWith('/') ? '' : '';
+      let accumulated = '';
       if (path.startsWith('/')) {
         // Unix absolute path
-        parts.forEach((part, i) => {
+        parts.forEach((part) => {
           accumulated += '/' + part;
           crumbs.push({ label: part, path: accumulated });
         });
@@ -77,6 +79,30 @@ export default function FileBrowser({ onLogout }) {
       setLoading(false);
     }
   }, [onLogout]);
+
+  // Initial load: restore path from URL hash if present
+  useEffect(() => {
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+      navigate(decodeURIComponent(hash), false);
+    } else {
+      loadDrives(false);
+    }
+  }, [navigate, loadDrives]);
+
+  // Sync navigation with browser back/forward buttons
+  useEffect(() => {
+    function handlePopState() {
+      const hash = window.location.hash.slice(1);
+      if (hash) {
+        navigate(decodeURIComponent(hash), false);
+      } else {
+        loadDrives(false);
+      }
+    }
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [navigate, loadDrives]);
 
   function handleBreadcrumb(path) {
     if (path === null) {
