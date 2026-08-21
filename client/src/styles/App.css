@@ -84,6 +84,13 @@ body {
   font-size: 0.875rem;
 }
 .btn-up:hover { background: var(--bg-hover); }
+.btn-up:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.files-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
 
 .btn-action {
   background: none;
