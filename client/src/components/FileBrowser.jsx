@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { getDrives, getFiles } from '../api';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { getDrives, getFiles, uploadFile } from '../api';
 import FileItem from './FileItem';
 import Preview from './Preview';
 import QRModal from './QRModal';
@@ -14,6 +14,8 @@ export default function FileBrowser({ onLogout }) {
   const [error, setError] = useState('');
   const [previewItem, setPreviewItem] = useState(null);
   const [qrData, setQrData] = useState(null); // { url, name }
+  const [uploadProgress, setUploadProgress] = useState(null); // 0-100 while uploading
+  const fileInputRef = useRef(null);
 
   const loadDrives = useCallback(async (push = true) => {
     setLoading(true);
@@ -116,6 +118,35 @@ export default function FileBrowser({ onLogout }) {
     setQrData({ url: absoluteUrl, name });
   }
 
+  function handleUploadClick() {
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileSelected(e) {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file later
+    if (!file) return;
+
+    setError('');
+    setUploadProgress(0);
+    try {
+      await uploadFile(currentPath, file, (progressEvent) => {
+        if (progressEvent.total) {
+          setUploadProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
+        }
+      });
+      await navigate(currentPath, false);
+    } catch (err) {
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        onLogout();
+      } else {
+        setError(err.response?.data?.error || 'Upload failed');
+      }
+    } finally {
+      setUploadProgress(null);
+    }
+  }
+
   return (
     <div className="browser-container">
       {/* Header */}
@@ -175,11 +206,26 @@ export default function FileBrowser({ onLogout }) {
 
         {!loading && view === 'files' && listing && (
           <div className="files-view">
-            {listing.parent && (
-              <button className="btn-up" onClick={() => navigate(listing.parent)}>
-                ⬆ Up
+            <div className="files-toolbar">
+              {listing.parent && (
+                <button className="btn-up" onClick={() => navigate(listing.parent)}>
+                  ⬆ Up
+                </button>
+              )}
+              <button
+                className="btn-up"
+                onClick={handleUploadClick}
+                disabled={uploadProgress !== null}
+              >
+                {uploadProgress !== null ? `Uploading… ${uploadProgress}%` : '⬆ Upload'}
               </button>
-            )}
+              <input
+                ref={fileInputRef}
+                type="file"
+                onChange={handleFileSelected}
+                style={{ display: 'none' }}
+              />
+            </div>
             {listing.items.length === 0 ? (
               <p className="empty-dir">This directory is empty.</p>
             ) : (

@@ -26,6 +26,16 @@ export function getFiles(path) {
   });
 }
 
+export function uploadFile(destPath, file, onProgress) {
+  const formData = new FormData();
+  formData.append('file', file);
+  return axios.post(`${BASE}/upload`, formData, {
+    params: { path: destPath },
+    headers: authHeaders(),
+    onUploadProgress: onProgress,
+  });
+}
+
 export function downloadUrl(filePath) {
   const token = getToken();
   return `${BASE}/download?path=${encodeURIComponent(filePath)}&token=${encodeURIComponent(token)}`;

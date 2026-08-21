@@ -3,9 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const mime = require('mime-types');
 const rateLimit = require('express-rate-limit');
+const multer = require('multer');
 const authMiddleware = require('../middleware/auth');
 
 const router = express.Router();
+
+const MAX_UPLOAD_MB = parseInt(process.env.MAX_UPLOAD_SIZE_MB, 10) || 1024;
 
 // Rate limiter: max 120 requests per minute per IP for file operations
 const fileLimiter = rateLimit({
@@ -138,6 +141,69 @@ router.get('/files', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+/**
+ * Upload a file into a directory. The destination directory is passed as a
+ * query parameter (not a multipart field) so it is available before multer
+ * needs it to pick a destination, regardless of multipart field ordering.
+ * Existing files with the same name are overwritten.
+ */
+const uploadStorage = multer.diskStorage({
+  destination(req, file, cb) {
+    const requestedPath = getStringParam(req.query.path);
+    const resolved = requestedPath && safePath(requestedPath);
+    if (!resolved || !fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+      return cb(new Error('Invalid destination path'));
+    }
+    req.uploadDestDir = resolved;
+    cb(null, resolved);
+  },
+  filename(req, file, cb) {
+    const safeName = path.basename(file.originalname || '');
+    if (!safeName || safeName === '.' || safeName === '..') {
+      return cb(new Error('Invalid file name'));
+    }
+    req.uploadFileName = safeName;
+    cb(null, safeName);
+  },
+});
+
+const upload = multer({
+  storage: uploadStorage,
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
+});
+
+router.post('/upload', (req, res) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ error: `File exceeds maximum upload size of ${MAX_UPLOAD_MB} MB` });
+      }
+      return res.status(400).json({ error: err.message || 'Upload failed' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'file is required' });
+    }
+
+    const fullPath = path.join(req.uploadDestDir, req.uploadFileName);
+    let stat;
+    try {
+      stat = fs.statSync(fullPath);
+    } catch {
+      return res.status(500).json({ error: 'Upload succeeded but file could not be read back' });
+    }
+
+    res.json({
+      name: req.uploadFileName,
+      path: fullPath,
+      isDirectory: false,
+      isFile: true,
+      size: stat.size,
+      mtime: stat.mtime.toISOString(),
+      mimeType: mime.lookup(fullPath) || 'application/octet-stream',
+    });
+  });
 });
 
 /**
